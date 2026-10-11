@@ -1,0 +1,1319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Linked-Off</title>
+<style>
+  :root {
+    /*
+     * 同时受屏幕宽度和高度约束。
+     * 小屏幕会自动缩小，不再依靠页面滚动容纳题面。
+     */
+    --cell: min(
+      66px,
+      calc((100vw - 64px) / 6),
+      calc((100dvh - 190px) / 7)
+    );
+    --gap: min(9px, 1.6vw, 1.15dvh);
+    --board-width: calc(var(--cell) * 6 + var(--gap) * 5);
+    --black: #000;
+    --off: #171717;
+    --off-border: #383838;
+    --on: #f4f4f4;
+    --hint: #fff;
+    --muted: #777;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  html,
+  body {
+    margin: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    background: var(--black);
+    color: #fff;
+    font-family: "Times New Roman", Times, serif;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
+  body {
+    height: 100dvh;
+    min-height: 0;
+  }
+
+  button {
+    font: inherit;
+  }
+
+  #app {
+    position: relative;
+    width: 100%;
+    height: 100dvh;
+    min-height: 0;
+    display: grid;
+    place-items: center;
+    padding: clamp(10px, 3dvh, 32px) 12px;
+    overflow: hidden;
+    touch-action: manipulation;
+  }
+
+  .stage {
+    width: min(100%, 520px);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    transition:
+      opacity 620ms ease,
+      transform 620ms cubic-bezier(.22,.72,.18,1);
+    will-change: transform, opacity;
+  }
+
+  .stage.push-layer {
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    height: max-content;
+  }
+
+  .stage.push-layer.push-current {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .stage.push-layer.push-current.run {
+    opacity: .08;
+    transform: translateY(var(--old-push-y));
+  }
+
+  /*
+   * 新题第一排从旧题预览排的实际位置起步。
+   * 因此其余四排从一开始就在第一排下方，并随整块题面滚入。
+   */
+  .stage.push-layer.push-next {
+    opacity: 1;
+    transform: translateY(var(--next-start-y));
+  }
+
+  .stage.push-layer.push-next.run {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .stage.enter {
+    opacity: 0;
+    transform: translateY(76px);
+  }
+
+  .stage.visible {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .stage.leave {
+    opacity: 0;
+    transform: translateY(-54px);
+  }
+
+  .stage.fade-out {
+    opacity: 0;
+    transform: scale(.985);
+  }
+
+  .stage.fade-in {
+    opacity: 0;
+    transform: scale(1.015);
+  }
+
+  .number {
+    appearance: none;
+    border: 0;
+    padding: 0;
+    margin: 0 0 28px;
+    color: #fff;
+    background: transparent;
+    font-size: 29px;
+    font-weight: 400;
+    line-height: 1;
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .number:focus-visible {
+    outline: 1px solid #fff;
+    outline-offset: 8px;
+  }
+
+  .board {
+    width: var(--board-width);
+    display: grid;
+    grid-template-columns: repeat(6, var(--cell));
+    grid-template-rows: repeat(6, var(--cell));
+    gap: var(--gap);
+  }
+
+  .cell {
+    position: relative;
+    width: var(--cell);
+    height: var(--cell);
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--off-border);
+    border-radius: 0;
+    background: var(--off);
+    cursor: pointer;
+    transition:
+      background 120ms linear,
+      border-color 120ms linear,
+      opacity 120ms linear;
+  }
+
+  .cell.on {
+    background: var(--on);
+    border-color: var(--on);
+  }
+
+  .cell.wall {
+    border-color: transparent;
+    background: #000;
+    cursor: default;
+    pointer-events: none;
+  }
+
+  .cell:active:not(.wall) {
+    opacity: .66;
+  }
+
+  .cell.hint::before {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    border: 2px solid var(--hint);
+    pointer-events: none;
+    mix-blend-mode: difference;
+    animation: hintPulse 720ms ease-in-out infinite alternate;
+  }
+
+  @keyframes hintPulse {
+    from { opacity: .35; }
+    to { opacity: 1; }
+  }
+
+  .zero-stage > .preview-wrap,
+  .initial-stage > .preview-wrap {
+    display: grid !important;
+    visibility: visible !important;
+    opacity: .48 !important;
+    min-height: var(--cell);
+  }
+
+  .preview-wrap {
+    position: relative;
+    width: var(--board-width);
+    height: var(--cell);
+    margin-top: calc(var(--gap) * 2.25);
+    overflow: hidden;
+    opacity: .48;
+    transition:
+      opacity 360ms ease,
+      transform 420ms cubic-bezier(.2,.72,.2,1);
+    -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,.95), rgba(0,0,0,.14));
+    mask-image: linear-gradient(to bottom, rgba(0,0,0,.95), rgba(0,0,0,.14));
+  }
+
+  .preview-row {
+    width: var(--board-width);
+    display: grid;
+    grid-template-columns: repeat(6, var(--cell));
+    gap: var(--gap);
+  }
+
+  .preview-cell {
+    width: var(--cell);
+    height: var(--cell);
+    border: 1px solid rgba(255,255,255,.34);
+    background: transparent;
+  }
+
+  .preview-cell.on {
+    background: #d7d7d7;
+    border-color: #d7d7d7;
+  }
+
+  .preview-cell.wall {
+    border-color: transparent;
+    background: transparent;
+  }
+
+  /*
+   * 切题时复制出来的“共享第一排”。
+   * 它从旧题下方的半透明预览位置，实际移动到新题第一排。
+   */
+  .preview-bridge {
+    position: fixed;
+    z-index: 20;
+    display: grid;
+    grid-template-columns: repeat(6, var(--cell));
+    gap: var(--gap);
+    pointer-events: none;
+    opacity: .48;
+    transform: translate3d(0, 0, 0);
+    transform-origin: top left;
+    transition:
+      transform 620ms cubic-bezier(.22,.72,.18,1),
+      opacity 500ms ease;
+    will-change: transform, opacity;
+    -webkit-mask-image: linear-gradient(to bottom, rgba(0,0,0,.95), rgba(0,0,0,.14));
+    mask-image: linear-gradient(to bottom, rgba(0,0,0,.95), rgba(0,0,0,.14));
+  }
+
+  .preview-bridge.run {
+    opacity: 1;
+    transform: translate3d(0, var(--bridge-y), 0);
+    -webkit-mask-image: none;
+    mask-image: none;
+  }
+
+  .bridge-cell {
+    width: var(--cell);
+    height: var(--cell);
+    border: 1px solid rgba(255,255,255,.34);
+    background: transparent;
+    transition:
+      background 500ms ease,
+      border-color 500ms ease;
+  }
+
+  .preview-bridge.run .bridge-cell {
+    background: var(--off);
+    border-color: var(--off-border);
+  }
+
+  .bridge-cell.on {
+    background: #d7d7d7;
+    border-color: #d7d7d7;
+  }
+
+  .preview-bridge.run .bridge-cell.on {
+    background: var(--on);
+    border-color: var(--on);
+  }
+
+  .bridge-cell.wall,
+  .preview-bridge.run .bridge-cell.wall {
+    border-color: transparent;
+    background: transparent;
+  }
+
+  .stage.hide-first-row .board .cell:nth-child(-n + 6) {
+    opacity: 0;
+  }
+
+  .stage.hide-first-row .board .cell:nth-child(-n + 6).wall {
+    opacity: 0;
+  }
+
+  /* v5 保持原动画；仅让第 2～5 排在第一排落位后再淡入。 */
+  .stage.delay-lower-rows .board .cell:nth-child(n + 7) {
+    opacity: 0;
+  }
+
+  /*
+   * 只隐藏正在进入的新题自己的第六排。
+   * 旧题第六排复制出的 preview-bridge 不受此规则影响，
+   * 因而仍按原来的轨迹滑到新题第一排。
+   */
+  .stage.push-next.delay-lower-rows > .preview-wrap {
+    opacity: 0;
+  }
+
+  .stage.reveal-lower-rows .board .cell:nth-child(n + 7) {
+    opacity: 1;
+    transition: opacity 300ms ease;
+  }
+
+  .stage.push-next.reveal-lower-rows > .preview-wrap {
+    opacity: .48;
+    transition: opacity 300ms ease;
+  }
+
+  /*
+   * 第一排在桥接完成后锁定：
+   * 下四排淡入期间不再重新计算透明度或过渡，避免闪一下。
+   */
+  .stage.delay-lower-rows:not(.hide-first-row) .board .cell:nth-child(-n + 6),
+  .stage.reveal-lower-rows .board .cell:nth-child(-n + 6) {
+    opacity: 1 !important;
+    transition: none !important;
+  }
+
+  .stage.settle-no-transition,
+  .stage.settle-no-transition * {
+    transition: none !important;
+  }
+
+  .dev-message {
+    min-height: 20px;
+    margin-top: 18px;
+    color: #aaa;
+    font-size: 12px;
+    letter-spacing: .02em;
+    text-align: center;
+    opacity: 0;
+    transition: opacity 160ms ease;
+  }
+
+  .dev-message.show {
+    opacity: 1;
+  }
+
+  .impossible {
+    margin-top: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    pointer-events: none;
+  }
+
+  .impossible.show {
+    pointer-events: auto;
+  }
+
+  .impossible-text {
+    margin: 0 0 18px;
+    color: #fff;
+    font-size: 17px;
+    font-weight: 400;
+    line-height: 1.3;
+  }
+
+  .restart {
+    appearance: none;
+    min-width: 112px;
+    padding: 10px 22px;
+    border: 1px solid #fff;
+    border-radius: 0;
+    color: #fff;
+    background: #000;
+    cursor: pointer;
+    transition: color 120ms linear, background 120ms linear;
+  }
+
+  .restart:hover,
+  .restart:focus-visible {
+    color: #000;
+    background: #fff;
+    outline: none;
+  }
+
+
+  /*
+   * 无解文字和按钮分别淡入。
+   * 外层只负责启用点击，不再直接控制子元素透明度。
+   */
+  .impossible-text,
+  .restart {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  .impossible.show.animate .impossible-text {
+    animation: impossibleTextFade 560ms ease forwards;
+  }
+
+  .impossible.show.animate .restart {
+    animation: impossibleButtonFade 560ms 150ms ease forwards;
+  }
+
+  /*
+   * 首次淡入之后保持静态可见。
+   * 后续交换只重绘灯阵，不再重复播放动画。
+   */
+  .impossible.show.settled .impossible-text,
+  .impossible.show.settled .restart {
+    opacity: 1;
+    transform: none;
+  }
+
+  @keyframes impossibleTextFade {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes impossibleButtonFade {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /*
+   * 每关完成后的中央圆形闪光。
+   * 只作为覆盖层，不改变题面布局。
+   */
+  .clear-ripple {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    z-index: 100;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: rgba(255,255,255,.34);
+    transform: translate(-50%, -50%) scale(.15);
+    opacity: 0;
+    pointer-events: none;
+    will-change: transform, opacity;
+  }
+
+  .clear-ripple.play {
+    animation: clearRipple 560ms cubic-bezier(.18,.72,.22,1) forwards;
+  }
+
+  @keyframes clearRipple {
+    0% {
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(.15);
+    }
+    18% {
+      opacity: .7;
+    }
+    100% {
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(18);
+    }
+  }
+
+  @media (max-height: 650px) {
+    .number {
+      margin-bottom: 17px;
+      font-size: 24px;
+    }
+
+    .preview-wrap {
+      margin-top: var(--gap);
+    }
+
+    .dev-message {
+      margin-top: 8px;
+      min-height: 14px;
+    }
+
+    .impossible {
+      margin-top: 14px;
+    }
+
+    .impossible-text {
+      margin-bottom: 10px;
+      font-size: 15px;
+    }
+
+    .completion-word {
+      font-size: 15px;
+    }
+
+    .restart {
+      padding: 7px 18px;
+    }
+
+    .complete {
+      margin-top: 15px;
+    }
+  }
+
+  @media (max-height: 480px) {
+    :root {
+      /*
+       * 小屏幕仍保留第六排，确保动画测量逻辑与大屏幕完全一致。
+       * 通过按六排高度缩小格子来适配，而不是隐藏动画基准元素。
+       */
+      --cell: min(
+        48px,
+        calc((100vw - 48px) / 6),
+        calc((100dvh - 124px) / 7)
+      );
+      --gap: min(5px, 1vw, .8dvh);
+    }
+
+    .dev-message {
+      display: none;
+    }
+
+    .preview-wrap {
+      display: grid;
+      margin-top: var(--gap);
+    }
+
+    .number {
+      margin-bottom: 10px;
+      font-size: 20px;
+    }
+
+    #app {
+      padding-top: 6px;
+      padding-bottom: 6px;
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 1ms !important;
+      transition-duration: 1ms !important;
+    }
+  }
+
+/* Minimal fixed controls */
+#solver-toggle{position:fixed;top:max(12px,env(safe-area-inset-top));left:max(12px,env(safe-area-inset-left));z-index:220;font:11px Arial,sans-serif;letter-spacing:.035em;background:#090909;color:#aaa;border:1px solid #343434;border-radius:4px;padding:8px 10px;cursor:pointer}
+#solver-toggle.enabled{color:#e3e3e3;border-color:#747474}
+#solver-toggle:hover,#solver-toggle:focus-visible{color:#fff;border-color:#aaa}
+@media(max-width:410px){.top-actions{gap:5px;max-width:calc(100vw - 135px)}.top-actions button{font-size:9px;padding:8px 6px}#solver-toggle{font-size:10px;padding:8px 7px}}
+.top-actions{position:fixed;top:max(12px,env(safe-area-inset-top));right:max(12px,env(safe-area-inset-right));z-index:220;display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;max-width:calc(100vw - 24px)}
+.top-actions button{font-family:Arial,sans-serif;font-size:11px;letter-spacing:.035em;background:#090909;color:#aaa;border:1px solid #343434;border-radius:4px;padding:8px 10px;cursor:pointer}
+.top-actions button:hover,.top-actions button:focus-visible{color:white;border-color:#888}
+.impossible-text a{color:#858585;text-decoration:none;border-bottom:1px solid #555;transition:color .2s}
+.impossible-text a:hover{color:#ccc}
+.impossible-text{font-size:15px;text-align:center;max-width:90vw}
+.guess-bar{position:fixed;bottom:max(13px,env(safe-area-inset-bottom));left:50%;transform:translateX(-50%);z-index:220;width:min(390px,calc(100vw - 32px));display:flex;gap:9px;align-items:center;font-family:Arial,sans-serif}
+.guess-bar input{min-width:0;width:100%;background:#0b0b0b;border:1px solid #3c3c3c;color:#eee;border-radius:4px;outline:none;padding:11px 12px;font:12px Arial,sans-serif;letter-spacing:.075em}
+.guess-bar input:focus{border-color:#999}
+.guess-bar input::placeholder{color:#777}
+.guess-bar button{border:1px solid #555;border-radius:4px;background:#141414;color:#bbb;padding:11px 12px;font:11px Arial,sans-serif;cursor:pointer}
+.guess-bar button:hover{border-color:#aaa;color:white}
+@media(max-height:700px){:root{--cell:min(66px,calc((100vw - 64px)/6),calc((100dvh - 235px)/7))}}
+@media(max-height:480px){:root{--cell:min(48px,calc((100vw - 48px)/6),calc((100dvh - 160px)/7))}}
+</style>
+</head>
+<body>
+<main id="app"></main>
+
+<script>
+const DATA = {"zeroBoard":[[2,2,2,2,2,2],[2,2,2,2,2,2],[2,2,2,2,2,2],[2,2,2,2,2,2],[2,2,0,1,2,2],[2,2,1,0,0,1]],"baseBoards":[[[2,2,2,0,0,0],[2,2,2,0,2,0],[2,2,2,2,2,0],[2,2,2,2,1,1],[2,2,2,2,2,1],[2,2,2,2,2,1]],[[2,2,2,1,0,0],[2,2,2,1,1,1],[2,2,2,0,1,1],[2,2,2,0,2,1],[2,2,2,1,1,0],[2,2,0,0,1,0]],[[2,2,2,1,1,1],[2,2,2,0,1,1],[2,2,2,0,0,1],[2,2,2,0,0,0],[2,2,2,2,1,1],[2,2,2,2,1,0]],[[2,2,2,2,1,0],[2,2,2,2,0,0],[2,2,2,2,0,1],[2,2,2,0,1,1],[2,2,2,0,0,0],[2,2,2,2,0,0]],[[2,1,0,0,1,0],[2,0,2,1,1,0],[2,2,1,1,0,1],[2,1,0,1,0,0],[2,2,2,0,1,0],[2,2,2,2,0,1]],[[2,0,0,1,1,0],[0,1,1,1,1,1],[2,2,1,1,1,1],[0,1,1,1,2,1],[2,2,2,0,2,1],[2,2,1,1,1,2]],[[2,0,0,1,1,2],[2,2,1,0,1,2],[2,2,0,1,2,2],[2,2,1,0,0,0],[2,2,0,0,0,1],[0,1,0,1,1,0]],[[0,1,1,1,1,1],[1,0,2,1,1,0],[2,1,0,1,2,0],[1,0,1,1,0,1],[0,1,1,1,0,0],[1,0,1,1,1,0]]],"difficulty":["1","2","3","4","5","6","7","8"],"firstWeights":[2,5,7,9,14,15,16,null],"secondWeights":[5,7,8,9,13,14,15,23],"activeCounts":[10,18,16,14,23,25,23,33]};
+const CONFIG = { withZero: true, solver: true, url: 'https://docs.google.com/document/d/1F0h-OisUbt3CRcZoACuwTtptwfTchl__J9mVrOzU3Qs/edit?tab=t.0' };
+const SIZE = 6;
+const LAST_LEVEL = DATA.baseBoards.length - 1;
+
+let phase = "zero"; // first | zero | second | complete
+let currentLevel = 0;
+let boards = structuredClone(DATA.baseBoards);
+let zeroBoard = structuredClone(DATA.zeroBoard);
+let clicks = 0;
+let transitioning = false;
+// Incrementing this generation invalidates every callback from a canceled animation.
+let animationGeneration = 0;
+function scheduled(fn, ms) {
+  const generation = animationGeneration;
+  return window.setTimeout(() => {
+    if (generation === animationGeneration) fn();
+  }, ms);
+}
+function nextFrame(fn) {
+  const generation = animationGeneration;
+  return window.requestAnimationFrame(() => {
+    if (generation === animationGeneration) fn();
+  });
+}
+function cancelAnimation() {
+  animationGeneration++;
+  transitioning = false;
+  document.querySelectorAll('.preview-bridge, .clear-ripple').forEach(el => el.remove());
+}
+let hintEnabled = CONFIG.solver;
+let impossibleShown = false;
+let impossibleAnimated = false;
+let impossibleRevealing = false;
+let levelStartBoard = null;
+let nextLevelStartBoard = null;
+let terminalSilent = false;
+
+const app = document.getElementById("app");
+
+function cloneBoard(board) {
+  return board.map(row => row.slice());
+}
+
+function isWall(board, r, c) {
+  return r < 0 || r >= SIZE || c < 0 || c >= SIZE || board[r][c] === 2;
+}
+
+function toggle(board, r, c) {
+  if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) return;
+  if (board[r][c] !== 2) board[r][c] ^= 1;
+}
+
+function pressLocal(board, r, c) {
+  toggle(board, r, c);
+  toggle(board, r - 1, c);
+  toggle(board, r + 1, c);
+  toggle(board, r, c - 1);
+  toggle(board, r, c + 1);
+}
+
+function cleared(board) {
+  return board.every(row => row.every(value => value === 0 || value === 2));
+}
+
+function getCurrentBoard() {
+  return phase === "zero" ? zeroBoard : boards[currentLevel];
+}
+
+function getDisplayedNumber() {
+  return phase === "zero" ? 0 : currentLevel + 1;
+}
+
+function hasPreview() {
+  if (phase === "zero") return true;
+  return currentLevel < LAST_LEVEL;
+}
+
+function getPreviewRow() {
+  if (phase === "zero") return boards[0][0];
+  return boards[currentLevel + 1][0];
+}
+
+function activeCells(board) {
+  const cells = [];
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      if (board[r][c] !== 2) cells.push([r, c]);
+    }
+  }
+  return cells;
+}
+
+/*
+ * 直接对当前盘面做 GF(2) 消元。
+ * 开发提示完全由眼前盘面计算，不依赖预设点击序列。
+ */
+function solveCurrent(board) {
+  const cells = activeCells(board);
+  const index = new Map(cells.map((cell, i) => [cell.join(","), i]));
+  const n = cells.length;
+  const rows = Array.from({ length: n }, () => Array(n + 1).fill(0));
+  cells.forEach(([r, c], column) => {
+    [[0,0], [1,0], [-1,0], [0,1], [0,-1]].forEach(([dr, dc]) => {
+      const row = index.get(`${r + dr},${c + dc}`);
+      if (row !== undefined) rows[row][column] = 1;
+    });
+  });
+  cells.forEach(([r, c], i) => { rows[i][n] = board[r][c]; });
+
+  const pivots = [];
+  let rank = 0;
+  for (let col = 0; col < n; col++) {
+    let pivot = -1;
+    for (let r = rank; r < n; r++) {
+      if (rows[r][col]) { pivot = r; break; }
+    }
+    if (pivot === -1) continue;
+    [rows[rank], rows[pivot]] = [rows[pivot], rows[rank]];
+    for (let r = 0; r < n; r++) {
+      if (r !== rank && rows[r][col]) {
+        for (let k = col; k <= n; k++) rows[r][k] ^= rows[rank][k];
+      }
+    }
+    pivots.push(col);
+    rank++;
+  }
+  for (let r = rank; r < n; r++) {
+    if (!rows[r].slice(0, n).some(Boolean) && rows[r][n]) return null;
+  }
+  const pivotSet = new Set(pivots);
+  const free = Array.from({ length: n }, (_, i) => i).filter(i => !pivotSet.has(i));
+  // For these puzzle boards the maximum nullity is one, so enumerating all
+  // free-variable choices yields a provably minimum-click solution.
+  let best = null;
+  let bestWeight = Infinity;
+  for (let mask = 0; mask < 2 ** free.length; mask++) {
+    const solution = Array(n).fill(0);
+    free.forEach((col, i) => { solution[col] = (mask >> i) & 1; });
+    pivots.forEach((col, r) => {
+      let value = rows[r][n];
+      free.forEach(j => { if (rows[r][j]) value ^= solution[j]; });
+      solution[col] = value;
+    });
+    const weight = solution.reduce((sum, bit) => sum + bit, 0);
+    if (weight < bestWeight) { best = solution; bestWeight = weight; }
+  }
+  const next = best.findIndex(Boolean);
+  return next < 0 ? [] : cells[next];
+}
+
+function currentHint() {
+  return solveCurrent(getCurrentBoard());
+}
+
+function updateBoardOnly() {
+  syncSolverControl();
+  const board = getCurrentBoard();
+  const cells = document.querySelectorAll(".board .cell");
+
+  if (cells.length !== SIZE * SIZE) {
+    render();
+    return;
+  }
+
+  const currentHintCached = CONFIG.solver && hintEnabled ? currentHint() : null;
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      const cell = cells[r * SIZE + c];
+      const value = board[r][c];
+
+      cell.classList.toggle("on", value === 1);
+      cell.classList.toggle("wall", value === 2);
+      cell.disabled = value === 2 || terminalSilent;
+      // Solver position depends on the *current* board, not a previous move.
+      const hint = CONFIG.solver && hintEnabled ? currentHintCached : null;
+      cell.classList.toggle("hint", !!hint && hint[0] === r && hint[1] === c);
+    }
+  }
+  const message = document.querySelector('.stage .dev-message');
+  if (message && CONFIG.solver && hintEnabled) {
+    message.textContent = currentHintCached === null ? 'No solution.' :
+      currentHintCached.length === 0 ? '' :
+      `row ${currentHintCached[0] + 1}, column ${currentHintCached[1] + 1}`;
+  }
+}
+
+function pressCell(r, c) {
+  if (transitioning || phase === "complete" || terminalSilent) return;
+
+  const board = getCurrentBoard();
+  if (isWall(board, r, c)) return;
+
+  clicks++;
+  pressLocal(board, r, c);
+
+  if (phase === "zero") {
+    if (r === SIZE - 1) toggle(boards[0], 0, c);
+  } else if (currentLevel < LAST_LEVEL && r === SIZE - 1) {
+    toggle(boards[currentLevel + 1], 0, c);
+  }
+
+  /*
+   * 一周目终关故意无解。
+   * 玩家第 5 次尝试后才揭示 Restart。
+   */
+  let revealImpossibleNow = false;
+  if (
+    phase === "first" &&
+    currentLevel === LAST_LEVEL &&
+    clicks >= 5 &&
+    (!CONFIG.solver || CONFIG.withZero) &&
+    !impossibleShown
+  ) {
+    impossibleShown = true;
+    impossibleAnimated = false;
+    impossibleRevealing = true;
+    revealImpossibleNow = true;
+  }
+
+  /*
+   * 无解文字与按钮正在淡入时，继续交换只更新灯格本身。
+   * 不重建 stage，因此现有 CSS 动画不会被重置或跳过。
+   */
+  if (impossibleRevealing && !revealImpossibleNow) {
+    updateBoardOnly();
+  } else {
+    render();
+  }
+
+  /*
+   * 动画全部结束后切换到 settled。
+   */
+  if (revealImpossibleNow) {
+    scheduled(() => {
+      impossibleAnimated = true;
+      impossibleRevealing = false;
+
+      const box = document.querySelector(".impossible");
+      if (box) {
+        box.classList.remove("animate");
+        box.classList.add("settled");
+      }
+    }, 760);
+  }
+
+  if (cleared(board)) {
+    /*
+     * 先播放中央白色圆圈，再进入下一步。
+     * 在特效期间锁定输入，避免重复触发。
+     */
+    transitioning = true;
+
+    if (phase === "zero") {
+      playClearRipple(() => {
+        transitioning = false;
+        transitionToLevel(0, "second");
+      });
+    } else if (currentLevel === LAST_LEVEL) {
+      if (phase === "second") {
+        playClearRipple(() => {
+          transitioning = false;
+          terminalSilent = true;
+          if (!CONFIG.solver && CONFIG.withZero) {
+            impossibleShown = true;
+            impossibleAnimated = true;
+            render();
+          } else {
+            updateBoardOnly();
+          }
+        });
+      }
+    } else {
+      const next = currentLevel + 1;
+      const nextPhase = phase;
+      playClearRipple(() => {
+        transitioning = false;
+        transitionToLevel(next, nextPhase);
+      });
+    }
+  }
+}
+
+function createPreviewBridge(row, sourceRect, targetRect) {
+  const bridge = document.createElement("div");
+  bridge.className = "preview-bridge";
+
+  /*
+   * 小屏幕最小修复：
+   * 桥接排一开始就使用新题第一排的横坐标，
+   * 原有动画仍然只负责从旧第六排高度滑到新第一排高度。
+   * 不改 transitionToLevel，也不改切题完成逻辑。
+   */
+  bridge.style.left = `${targetRect.left}px`;
+  bridge.style.top = `${sourceRect.top}px`;
+  bridge.style.width = `${targetRect.width}px`;
+  bridge.style.setProperty("--bridge-x", "0px");
+  bridge.style.setProperty(
+    "--bridge-y",
+    `${-Math.abs(sourceRect.top - targetRect.top)}px`
+  );
+
+  row.forEach(value => {
+    const cell = document.createElement("div");
+    cell.className = "bridge-cell";
+    if (value === 1) cell.classList.add("on");
+    if (value === 2) cell.classList.add("wall");
+    bridge.appendChild(cell);
+  });
+
+  document.body.appendChild(bridge);
+  return bridge;
+}
+
+function playClearRipple(callback) {
+  const ripple = document.createElement("div");
+  ripple.className = "clear-ripple";
+  document.body.appendChild(ripple);
+
+  // 强制建立初始帧，避免动画被浏览器合并。
+  void ripple.offsetWidth;
+  ripple.classList.add("play");
+
+  scheduled(() => {
+    ripple.remove();
+    callback();
+  }, 570);
+}
+
+function transitionToLevel(nextLevel, nextPhase) {
+  if (transitioning) return;
+  transitioning = true;
+
+  const oldStage = document.querySelector(".stage");
+  const oldPreview = oldStage?.querySelector(".preview-wrap");
+  if (!oldStage || !oldPreview) {
+    transitioning = false;
+    return;
+  }
+
+  const previewRowValues = getPreviewRow().slice();
+  const sourceRect = oldPreview.getBoundingClientRect();
+
+  oldStage.classList.remove("visible");
+  oldStage.classList.add("push-layer", "push-current");
+
+  currentLevel = nextLevel;
+  phase = nextPhase;
+  clicks = 0;
+  impossibleShown = false;
+  levelStartBoard = cloneBoard(getCurrentBoard());
+  nextLevelStartBoard = hasPreview() ? cloneBoard(boards[phase === "zero" ? 0 : currentLevel + 1]) : null;
+
+  /*
+   * 先把新题放在最终中央位置但设为不可见，用它测量真实第一排位置。
+   * 随后再把整题移动到屏幕下方作为动画起点。
+   */
+  const nextStage = buildStage();
+  nextStage.classList.remove("visible");
+  nextStage.classList.add("push-layer", "hide-first-row", "delay-lower-rows");
+  nextStage.style.opacity = "0";
+  nextStage.style.transform = "translateY(0)";
+  app.appendChild(nextStage);
+
+  const nextFirstCell = nextStage.querySelector(".board .cell");
+  const targetRect = nextFirstCell.getBoundingClientRect();
+
+  const bridge = createPreviewBridge(previewRowValues, sourceRect, targetRect);
+
+  // 旧预览由 bridge 接管，避免屏幕上同时出现两份。
+  oldPreview.style.opacity = "0";
+
+  /*
+   * 精确计算两排之间的位移。
+   * 新题整块向下平移，使其真实第一排与旧预览排完全重合；
+   * 第2～5排自然位于其下方，之后整块一起上滚到中央。
+   */
+  const verticalDistance = Math.abs(sourceRect.top - targetRect.top);
+  const nextStartY = verticalDistance;
+  const oldPushY = -verticalDistance;
+  nextStage.style.setProperty("--next-start-y", `${nextStartY}px`);
+  oldStage.style.setProperty("--old-push-y", `${oldPushY}px`);
+
+  nextStage.style.opacity = "";
+  nextStage.style.transform = "";
+  nextStage.classList.add("push-next");
+
+  // 提交全部起始几何状态。
+  void oldStage.offsetHeight;
+  void nextStage.offsetHeight;
+  void bridge.offsetHeight;
+
+  nextFrame(() => {
+    nextFrame(() => {
+      oldStage.classList.add("run");
+      nextStage.classList.add("run");
+      bridge.classList.add("run");
+    });
+  });
+
+  scheduled(() => {
+    /*
+     * bridge 已经与新题第一排完全重合。
+     * 先显示真实第一排，再移除 bridge。
+     */
+    nextStage.classList.remove("hide-first-row");
+    bridge.remove();
+
+    /*
+     * 第一排完全落位后，第 2～5 排再稍晚淡入。
+     */
+    scheduled(() => {
+      nextStage.classList.remove("delay-lower-rows");
+      nextStage.classList.add("reveal-lower-rows");
+
+      scheduled(() => {
+        /*
+         * 不再用 className 整体重置，否则第一排会重新应用样式而闪烁。
+         * 先临时关闭全部过渡，再只移除动画相关类。
+         */
+        nextStage.classList.add("settle-no-transition");
+        nextStage.classList.remove(
+          "push-layer",
+          "push-next",
+          "run",
+          "delay-lower-rows",
+          "reveal-lower-rows",
+          "hide-first-row"
+        );
+        nextStage.classList.add("visible");
+        nextStage.removeAttribute("style");
+        app.replaceChildren(nextStage);
+
+        nextFrame(() => {
+          nextFrame(() => {
+            nextStage.classList.remove("settle-no-transition");
+            transitioning = false;
+            updateBoardOnly();
+          });
+        });
+      }, 320);
+    }, 90);
+  }, 660);
+}
+
+function restartFromZero() {
+  if (transitioning) return;
+  transitioning = true;
+
+  const stage = document.querySelector(".stage");
+  stage?.classList.add("fade-out");
+
+  scheduled(() => {
+    boards = structuredClone(DATA.baseBoards);
+    zeroBoard = structuredClone(DATA.zeroBoard);
+    phase = "zero";
+    currentLevel = 0;
+    levelStartBoard = cloneBoard(zeroBoard);
+    nextLevelStartBoard = cloneBoard(boards[0]);
+    terminalSilent = false;
+    clicks = 0;
+      impossibleShown = false;
+    impossibleAnimated = false;
+    impossibleRevealing = false;
+
+    render("fade-in");
+
+    nextFrame(() => {
+      nextFrame(() => {
+        const nextStage = document.querySelector(".stage");
+        nextStage?.classList.remove("fade-in");
+        nextStage?.classList.add("visible");
+      });
+    });
+
+    scheduled(() => {
+      transitioning = false;
+    }, 470);
+  }, 430);
+}
+
+function toggleHint() {
+  if (!CONFIG.solver) return;
+  if (phase === "complete") return;
+  hintEnabled = !hintEnabled;
+  syncSolverControl();
+  if (!transitioning) render();
+}
+
+function createCell(value, r, c, hint) {
+  const cell = document.createElement("button");
+  cell.type = "button";
+  cell.className = "cell";
+
+  if (value === 1) cell.classList.add("on");
+  if (value === 2) cell.classList.add("wall");
+  if (hint && hint[0] === r && hint[1] === c) cell.classList.add("hint");
+
+  cell.disabled = value === 2 || terminalSilent;
+  cell.setAttribute("aria-label", value === 2 ? "wall" : `row ${r + 1}, column ${c + 1}`);
+  cell.addEventListener("click", () => pressCell(r, c));
+
+  return cell;
+}
+
+function createBoard(board, hint) {
+  const element = document.createElement("div");
+  element.className = "board";
+
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      element.appendChild(createCell(board[r][c], r, c, hint));
+    }
+  }
+
+  return element;
+}
+
+function createPreview(row) {
+  const wrap = document.createElement("div");
+  wrap.className = "preview-wrap";
+
+  const element = document.createElement("div");
+  element.className = "preview-row";
+
+  row.forEach(value => {
+    const cell = document.createElement("div");
+    cell.className = "preview-cell";
+    if (value === 1) cell.classList.add("on");
+    if (value === 2) cell.classList.add("wall");
+    element.appendChild(cell);
+  });
+
+  wrap.appendChild(element);
+  return wrap;
+}
+
+function buildStage(entryClass = "") {
+  const stage = document.createElement("section");
+  stage.className = `stage ${entryClass}`.trim();
+  if (phase === "zero") stage.classList.add("zero-stage");
+  if (!entryClass) stage.classList.add("visible");
+
+  const number = document.createElement("button");
+  number.type = "button";
+  number.className = "number";
+  number.textContent = String(getDisplayedNumber());
+  number.style.cursor = "default";
+  stage.appendChild(number);
+
+  const board = getCurrentBoard();
+  const hint = CONFIG.solver && hintEnabled ? currentHint() : null;
+  stage.appendChild(createBoard(board, hint));
+
+  if (hasPreview()) {
+    stage.appendChild(createPreview(getPreviewRow()));
+  }
+
+  const devMessage = document.createElement("div");
+  devMessage.className = "dev-message";
+
+  if (CONFIG.solver && hintEnabled) {
+    devMessage.classList.add("show");
+    if (hint === null) {
+      devMessage.textContent = "No solution.";
+    } else if (hint.length === 0) {
+      devMessage.textContent = "";
+    } else {
+      devMessage.textContent = `row ${hint[0] + 1}, column ${hint[1] + 1}`;
+    }
+  }
+
+  stage.appendChild(devMessage);
+
+  if (!CONFIG.solver && CONFIG.withZero && phase === "second" && currentLevel === LAST_LEVEL && terminalSilent) {
+    const impossible = document.createElement("div");
+    impossible.className =
+      `impossible${impossibleShown ? " show" : ""}` +
+      `${impossibleShown ? (impossibleAnimated ? " settled" : " animate") : ""}`;
+
+    if (!CONFIG.solver) {
+      const message = document.createElement("p");
+      message.className = "impossible-text";
+      const anchor = document.createElement("a");
+      anchor.href = CONFIG.url;
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer";
+      anchor.textContent = CONFIG.withZero
+        ? '“This time, it’s finally over.”'
+        : '“Wait, is something wrong with this level?”';
+      message.appendChild(anchor);
+      impossible.appendChild(message);
+    }
+
+    stage.appendChild(impossible);
+  }
+
+
+  return stage;
+}
+
+function render(entryClass = "") {
+  app.innerHTML = "";
+  app.appendChild(buildStage(entryClass));
+  // The same state controls the solver hint AND the toggle label.
+  syncSolverControl();
+}
+
+
+function resetLevel() {
+  if (!levelStartBoard) return;
+  cancelAnimation();
+  if (phase === "zero") zeroBoard = cloneBoard(levelStartBoard);
+  else boards[currentLevel] = cloneBoard(levelStartBoard);
+  // The last row can change the next level’s first row. Reset both snapshots.
+  if (nextLevelStartBoard && hasPreview()) {
+    boards[phase === "zero" ? 0 : currentLevel + 1] = cloneBoard(nextLevelStartBoard);
+  }
+  clicks = 0;
+  impossibleShown = false;
+  impossibleAnimated = false;
+  impossibleRevealing = false;
+  terminalSilent = false;
+  render();
+}
+function resetAll() {
+  // Reinitialize regardless of animation state so buttons also work during transitions.
+  cancelAnimation();
+  boards = structuredClone(DATA.baseBoards);
+  zeroBoard = structuredClone(DATA.zeroBoard);
+  phase = CONFIG.withZero ? 'zero' : 'first';
+  currentLevel = 0;
+  clicks = 0;
+  transitioning = false;
+  hintEnabled = CONFIG.solver;
+  syncSolverControl();
+  impossibleShown = false;
+  impossibleAnimated = false;
+  impossibleRevealing = false;
+  terminalSilent = false;
+  levelStartBoard = cloneBoard(getCurrentBoard());
+  nextLevelStartBoard = cloneBoard(boards[0]);
+  render();
+}
+function syncSolverControl() {
+  const toggle = document.getElementById('solver-toggle');
+  if (!toggle) return;
+  toggle.textContent = hintEnabled ? 'SOLVER ON' : 'SOLVER OFF';
+  toggle.setAttribute('aria-pressed', String(hintEnabled));
+  toggle.classList.toggle('enabled', hintEnabled);
+}
+
+function buildControls() {
+  const actions = document.createElement('nav');
+  actions.className = 'top-actions';
+  actions.setAttribute('aria-label','Game controls');
+  const one = document.createElement('button');
+  one.textContent = 'RESET LEVEL';
+  one.addEventListener('click', resetLevel);
+  const all = document.createElement('button');
+  all.textContent = 'RESET ALL';
+  all.addEventListener('click', resetAll);
+  actions.append(one, all);
+  document.body.appendChild(actions);
+  if (CONFIG.solver) {
+    const solverToggle = document.createElement('button');
+    solverToggle.id = 'solver-toggle';
+    solverToggle.type = 'button';
+    solverToggle.setAttribute('aria-label', 'Toggle solver');
+    solverToggle.addEventListener('click', toggleHint);
+    document.body.appendChild(solverToggle);
+    syncSolverControl();
+    const form = document.createElement('form');
+    form.className = 'guess-bar';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.autocomplete = 'off';
+    input.spellcheck = false;
+    input.placeholder = CONFIG.withZero ? 'ENTER YOUR GUESS (3 3 3)' : 'ENTER YOUR GUESS (5 2)';
+    input.setAttribute('aria-label', input.placeholder);
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.textContent = 'ENTER';
+    form.append(input, submit);
+    form.addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const normalized = input.value.toUpperCase().replace(/[^A-Z]/g, '');
+      const expected = CONFIG.withZero ? 'BEGHIMNOW' : 'BEGINOP';
+      if (normalized === expected) {
+        window.location.assign(CONFIG.url);
+      } else {
+        input.value = '';
+        input.placeholder = 'TRY AGAIN';
+      }
+    });
+    document.body.appendChild(form);
+  }
+}
+
+levelStartBoard = cloneBoard(getCurrentBoard());
+nextLevelStartBoard = cloneBoard(boards[0]);
+buildControls();
+render("fade-in initial-stage");
+nextFrame(() => {
+  nextFrame(() => {
+    const stage = document.querySelector(".stage");
+    stage?.classList.remove("fade-in");
+    stage?.classList.add("visible");
+  });
+});
+</script>
+</body>
+</html>
