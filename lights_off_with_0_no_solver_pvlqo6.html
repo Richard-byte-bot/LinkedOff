@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Linked-Off</title>
+<title>Linked-Out</title>
 <style>
   :root {
     /*
@@ -594,6 +594,13 @@
 .guess-bar button:hover{border-color:#aaa;color:white}
 @media(max-height:700px){:root{--cell:min(66px,calc((100vw - 64px)/6),calc((100dvh - 235px)/7))}}
 @media(max-height:480px){:root{--cell:min(48px,calc((100vw - 48px)/6),calc((100dvh - 160px)/7))}}
+/* Solver 解锁后固定在左上角，首次从屏幕上方滑入 */
+#solver-toggle{position:fixed;top:max(12px,env(safe-area-inset-top));left:max(12px,env(safe-area-inset-left));z-index:230;font:11px Arial,sans-serif;letter-spacing:.035em;background:#090909;color:#aaa;border:1px solid #343434;border-radius:4px;padding:8px 10px;cursor:pointer}
+#solver-toggle.enabled{color:#e3e3e3;border-color:#747474}
+#solver-toggle:hover,#solver-toggle:focus-visible{color:#fff;border-color:#aaa}
+#solver-toggle.drop-in{animation:solverDropIn 720ms cubic-bezier(.2,.8,.2,1) both}
+@keyframes solverDropIn{from{transform:translateY(calc(-100% - 55px));opacity:0}to{transform:translateY(0);opacity:1}}
+@media(max-width:410px){#solver-toggle{font-size:10px;padding:8px 7px}.top-actions{max-width:calc(100vw - 145px);gap:5px}.top-actions button{font-size:9px;padding:8px 6px}}
 </style>
 </head>
 <body>
@@ -629,6 +636,38 @@ function cancelAnimation() {
   animationGeneration++;
   transitioning = false;
   document.querySelectorAll('.preview-bridge, .clear-ripple').forEach(el => el.remove());
+}
+// 解锁一经获得，不随 RESET LEVEL / RESET ALL 清除，刷新页面亦保留。
+const SOLVER_UNLOCK_KEY = 'linked-out-with0-nosolver-unlocked-v1';
+let solverUnlocked = (() => { try { return localStorage.getItem(SOLVER_UNLOCK_KEY) === '1'; } catch (_) { return false; } })();
+// 第四关有效点击达到 8 次后直接滑入 SOLVER OFF；不闪烁、不禁用按钮、不自动显示提示。
+function unlockSolver() {
+  if (solverUnlocked || phase !== 'second' || currentLevel !== 3 || clicks < 8) return;
+  solverUnlocked = true;
+  hintEnabled = false;
+  try { localStorage.setItem(SOLVER_UNLOCK_KEY, '1'); } catch (_) {}
+  ensureSolverControl(true);
+}
+function syncSolverControl() {
+  const control = document.getElementById('solver-toggle');
+  if (!control) return;
+  control.textContent = hintEnabled ? 'SOLVER ON' : 'SOLVER OFF';
+  control.setAttribute('aria-pressed', String(hintEnabled));
+  control.classList.toggle('enabled', hintEnabled);
+}
+function ensureSolverControl(animate = false) {
+  if (!solverUnlocked) return;
+  let control = document.getElementById('solver-toggle');
+  if (!control) {
+    control = document.createElement('button');
+    control.type = 'button';
+    control.id = 'solver-toggle';
+    control.setAttribute('aria-label', 'Toggle solver');
+    control.addEventListener('click', toggleHint);
+    document.body.appendChild(control);
+    if (animate) control.classList.add('drop-in');
+  }
+  syncSolverControl();
 }
 let hintEnabled = false;
 let impossibleShown = false;
@@ -762,6 +801,7 @@ function currentHint() {
 }
 
 function updateBoardOnly() {
+  syncSolverControl();
   const board = getCurrentBoard();
   const cells = document.querySelectorAll(".board .cell");
 
@@ -945,6 +985,8 @@ function transitionToLevel(nextLevel, nextPhase) {
   phase = nextPhase;
   clicks = 0;
   hintEnabled = false;
+  syncSolverControl();
+  unlockSolver();
   impossibleShown = false;
   levelStartBoard = cloneBoard(getCurrentBoard());
   nextLevelStartBoard = hasPreview() ? cloneBoard(boards[phase === "zero" ? 0 : currentLevel + 1]) : null;
@@ -1058,6 +1100,7 @@ function restartFromZero() {
     terminalSilent = false;
     clicks = 0;
     hintEnabled = false;
+  syncSolverControl();
     impossibleShown = false;
     impossibleAnimated = false;
     impossibleRevealing = false;
@@ -1079,9 +1122,10 @@ function restartFromZero() {
 }
 
 function toggleHint() {
-  if (!CONFIG.solver) return;
+  if (!solverUnlocked) return;
   if (transitioning || phase === "complete") return;
   hintEnabled = !hintEnabled;
+  syncSolverControl();
   render();
 }
 
@@ -1143,7 +1187,7 @@ function buildStage(entryClass = "") {
   number.type = "button";
   number.className = "number";
   number.textContent = String(getDisplayedNumber());
-  if (CONFIG.solver) {
+  if (solverUnlocked) {
     number.title = "Solver hint";
     number.addEventListener("click", toggleHint);
   } else {
@@ -1162,7 +1206,7 @@ function buildStage(entryClass = "") {
   const devMessage = document.createElement("div");
   devMessage.className = "dev-message";
 
-  if (CONFIG.solver && hintEnabled) {
+  if (solverUnlocked && hintEnabled) {
     devMessage.classList.add("show");
     if (hint === null) {
       devMessage.textContent = "No solution.";
@@ -1203,6 +1247,7 @@ function buildStage(entryClass = "") {
 }
 
 function render(entryClass = "") {
+  unlockSolver();
   app.innerHTML = "";
   app.appendChild(buildStage(entryClass));
 }
@@ -1219,6 +1264,7 @@ function resetLevel() {
   }
   clicks = 0;
   hintEnabled = false;
+  syncSolverControl();
   impossibleShown = false;
   impossibleAnimated = false;
   impossibleRevealing = false;
@@ -1235,6 +1281,7 @@ function resetAll() {
   clicks = 0;
   transitioning = false;
   hintEnabled = false;
+  syncSolverControl();
   impossibleShown = false;
   impossibleAnimated = false;
   impossibleRevealing = false;
@@ -1255,6 +1302,7 @@ function buildControls() {
   all.addEventListener('click', resetAll);
   actions.append(one, all);
   document.body.appendChild(actions);
+  ensureSolverControl(false);
   if (CONFIG.solver) {
     const form = document.createElement('form');
     form.className = 'guess-bar';
